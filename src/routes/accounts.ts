@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,10 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // A company account was created on its starting plan: its sign-up, as the API has no self-serve sign-up.
+  trackEvent("account_created", res.locals as AuthLocals, { newAccountId: created.id, plan: created.plan });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +63,8 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read before the update, to tell whether it moves the account to another plan.
+  const previousPlan = accountStore.get(req.params.id)?.plan;
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +72,16 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  if (previousPlan !== undefined && updated.plan !== previousPlan) {
+    // The account moved to another plan: an upgrade or a downgrade, in the order of PLANS.
+    trackEvent("account_plan_changed", res.locals as AuthLocals, {
+      targetAccountId: updated.id,
+      previousPlan,
+      newPlan: updated.plan,
+      changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previousPlan) ? "upgrade" : "downgrade",
+      accountUserCount: userStore.list(updated.id).length,
+    });
   }
   res.json(updated);
 });
@@ -74,9 +91,13 @@ accountsRouter.delete("/:id", (req, res) => {
     res.status(409).json({ error: "the account still has users" });
     return;
   }
+  // Read before removing, to record the plan the account was on.
+  const deletedPlan = accountStore.get(req.params.id)?.plan;
   if (!accountStore.remove(req.params.id)) {
     res.status(404).json({ error: "account not found" });
     return;
   }
+  // The account is gone. Refused deletes (409 while it has users, or 404) never get here.
+  trackEvent("account_deleted", res.locals as AuthLocals, { deletedAccountId: req.params.id, plan: deletedPlan });
   res.status(204).end();
 });

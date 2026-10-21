@@ -1,8 +1,11 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -24,6 +27,11 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** Whole days from one ISO date to another, such as 5 from "2026-11-03" to "2026-11-08". */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -42,6 +50,17 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // The trip is saved. Only this branch confirms it: the web app's save click also fires on a 400.
+  trackEvent("trip_created", res.locals as AuthLocals, {
+    tripId: trip.id,
+    destination: trip.destination,
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    travelers: trip.travelers,
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate),
+    // Today in UTC, like the trip dates and tripStore.upcoming().
+    daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
   });
   res.status(201).json(trip);
 });

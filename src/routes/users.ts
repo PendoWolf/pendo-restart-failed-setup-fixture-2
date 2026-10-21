@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,14 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A user was added to an account, by the signed-in user. Never send their email, name or password to Pendo.
+  trackEvent("user_created", res.locals as AuthLocals, {
+    newUserId: user.id,
+    role: user.role,
+    roleDefaulted: body!.role === undefined,
+    targetAccountId: user.accountId,
+    accountUserCount: userStore.list(user.accountId).length,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +83,8 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read before the update, to tell whether it changes the user's role.
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +93,17 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  if (previousRole !== undefined && updated.role !== previousRole) {
+    // The user's permission level changed: promoted to admin or demoted to member.
+    const signedIn = res.locals as AuthLocals;
+    trackEvent("user_role_changed", signedIn, {
+      targetUserId: updated.id,
+      previousRole,
+      newRole: updated.role,
+      targetAccountId: updated.accountId,
+      isSelfChange: updated.id === signedIn.user.id,
+    });
   }
   res.json(updated);
 });
