@@ -1,8 +1,14 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { trackEvent } from "../pendo/track.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TRIP_FIELDS: (keyof NewTrip)[] = ["destination", "startDate", "endDate", "travelers"];
+/** The most of a destination a Pendo event carries, to keep within Pendo's size limit for event properties. */
+const MAX_TRACKED_DESTINATION = 80;
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -24,6 +30,17 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** Whole days from one ISO date to another: negative when `to` is earlier. */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** How many days the trip lasts, counting both ends, and how many days from today it starts. */
+function tripTiming({ startDate, endDate }: NewTrip): { tripLengthDays: number; daysUntilStart: number } {
+  const today = new Date().toISOString().slice(0, 10);
+  return { tripLengthDays: daysBetween(startDate, endDate) + 1, daysUntilStart: daysBetween(today, startDate) };
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -42,6 +59,21 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // Pendo: a trip was saved, with what was planned.
+  const signedIn = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_created",
+    visitorId: signedIn.user.id,
+    accountId: signedIn.account.id,
+    properties: {
+      tripId: trip.id,
+      destination: trip.destination.slice(0, MAX_TRACKED_DESTINATION),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      ...tripTiming(trip),
+      travelers: trip.travelers,
+    },
   });
   res.status(201).json(trip);
 });
@@ -62,6 +94,8 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read before the update: the body always resends every field, so only this shows what changed.
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +106,19 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // Pendo: a trip's details were saved, with which of them changed.
+  const signedIn = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_updated",
+    visitorId: signedIn.user.id,
+    accountId: signedIn.account.id,
+    properties: {
+      tripId: trip.id,
+      changedFields: TRIP_FIELDS.filter((field) => previous?.[field] !== trip[field]),
+      travelers: trip.travelers,
+      ...tripTiming(trip),
+    },
+  });
   res.json(trip);
 });
 

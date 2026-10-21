@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { trackEvent } from "../pendo/track.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a person was added to an account, by the signed-in user. Never their email, name or password.
+  const signedIn = res.locals as AuthLocals;
+  trackEvent({
+    event: "user_created",
+    visitorId: signedIn.user.id,
+    accountId: signedIn.account.id,
+    properties: {
+      createdUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      addedToOwnAccount: user.accountId === signedIn.account.id,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,22 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo: the user's permission level changed. An edit of only their name or email isn't one.
+  if (previous && body!.role !== undefined && body!.role !== previous.role) {
+    const signedIn = res.locals as AuthLocals;
+    trackEvent({
+      event: "user_role_changed",
+      visitorId: signedIn.user.id,
+      accountId: signedIn.account.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+        isSelfChange: req.params.id === signedIn.user.id,
+      },
+    });
   }
   res.json(updated);
 });

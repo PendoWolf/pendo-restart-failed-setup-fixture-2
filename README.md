@@ -69,6 +69,26 @@ Claude model through the Anthropic SDK (`src/assistant/reply.ts`), which reads i
 `ANTHROPIC_API_KEY`. The model is told who the signed-in user is, their account, and their
 upcoming trips.
 
+## Pendo track events
+
+Some routes send a Pendo track event once what the user did has succeeded, from
+`src/pendo/track.ts` through Pendo's Track API. The signed-in user is the event's visitor and
+their account is its account. Events go out in the background, so a slow or failing Pendo never
+slows down or fails a request, and none are sent without `PENDO_TRACK_EVENT_SECRET`. No event
+carries an email, a name, a password or the content of a chat message.
+
+| Event | Sent when |
+| --- | --- |
+| `trip_created` | `POST /api/trips` saved a trip |
+| `trip_updated` | `PUT /api/trips/:id` saved a trip, with which of its fields changed |
+| `user_created` | `POST /api/users` added a user to an account |
+| `user_role_changed` | `PUT /api/users/:id` changed a user's role |
+| `account_created` | `POST /api/accounts` created an account |
+| `account_plan_changed` | `PUT /api/accounts/:id` moved an account to another plan |
+| `account_deleted` | `DELETE /api/accounts/:id` deleted an account |
+| `assistant_reply_generated` | `POST /api/assistant/chat` got the assistant's reply |
+| `assistant_reply_failed` | `POST /api/assistant/chat` couldn't get a reply from the model |
+
 ## Structure
 
 - `src/index.ts` starts the server
@@ -77,6 +97,7 @@ upcoming trips.
 - `src/routes/` the auth, trips, users, accounts and assistant routes
 - `src/store/` in-memory stores for trips, users, accounts and sessions
 - `src/assistant/reply.ts` the assistant's replies, from the language model
+- `src/pendo/track.ts` sends the routes' Pendo track events to Pendo's Track API
 
 ## Run
 
@@ -93,3 +114,5 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_DATA_HOST` | Host of Pendo's Track API, which the track events go to | `data.pendo-dev.pendo-dev.com` |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo's Track Event shared secret (a secret: never commit it); without it, no track events are sent | none |

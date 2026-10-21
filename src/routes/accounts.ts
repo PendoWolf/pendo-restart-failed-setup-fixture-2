@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { trackEvent } from "../pendo/track.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,16 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // Pendo: a company account was set up, with the plan it starts on.
+  const signedIn = res.locals as AuthLocals;
+  trackEvent({
+    event: "account_created",
+    visitorId: signedIn.user.id,
+    accountId: signedIn.account.id,
+    properties: { createdAccountId: account.id, plan: account.plan },
+  });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +69,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +77,22 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Pendo: the account moved to another plan, up or down. A rename alone isn't a plan change.
+  if (previous && body!.plan !== undefined && body!.plan !== previous.plan) {
+    const signedIn = res.locals as AuthLocals;
+    trackEvent({
+      event: "account_plan_changed",
+      visitorId: signedIn.user.id,
+      accountId: signedIn.account.id,
+      properties: {
+        targetAccountId: updated.id,
+        previousPlan: previous.plan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+        isOwnAccount: updated.id === signedIn.account.id,
+      },
+    });
   }
   res.json(updated);
 });
@@ -74,9 +102,19 @@ accountsRouter.delete("/:id", (req, res) => {
     res.status(409).json({ error: "the account still has users" });
     return;
   }
+  // Read before it's removed, so the Pendo event can say which plan was lost.
+  const account = accountStore.get(req.params.id);
   if (!accountStore.remove(req.params.id)) {
     res.status(404).json({ error: "account not found" });
     return;
   }
+  // Pendo: a company account was deleted (churn).
+  const signedIn = res.locals as AuthLocals;
+  trackEvent({
+    event: "account_deleted",
+    visitorId: signedIn.user.id,
+    accountId: signedIn.account.id,
+    properties: { deletedAccountId: req.params.id, plan: account?.plan },
+  });
   res.status(204).end();
 });
