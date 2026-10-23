@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { daysBetween, today, trackEvent, truncate } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
@@ -43,6 +45,24 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved: only this confirms a trip was actually created.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      travelers: trip.travelers,
+      trip_length_days: daysBetween(trip.startDate, trip.endDate),
+      days_until_start: daysBetween(today(), trip.startDate),
+      accountPlan: account.plan,
+    },
+    req,
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +82,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +93,25 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The update was saved: report which of the trip's details changed.
+  const { user, account } = res.locals as AuthLocals;
+  const fields = ["destination", "startDate", "endDate", "travelers"] as const;
+  trackEvent({
+    event: "trip_updated",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      travelers: trip.travelers,
+      changed_fields: previous ? fields.filter((field) => previous[field] !== trip[field]) : [],
+      previous_travelers: previous?.travelers ?? null,
+      trip_length_days: daysBetween(trip.startDate, trip.endDate),
+    },
+    req,
+  });
   res.json(trip);
 });
 

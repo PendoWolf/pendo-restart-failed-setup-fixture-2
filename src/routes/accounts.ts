@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,21 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // A new customer account was created, on its starting plan.
+  const { user, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent({
+    event: "account_created",
+    visitorId: user.id,
+    accountId: actorAccount.id,
+    properties: {
+      accountId: account.id,
+      plan: account.plan,
+      createdByUserId: user.id,
+    },
+    req,
+  });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +74,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +82,24 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only a real plan change counts (an upgrade or a downgrade), not a rename or a save with the same plan.
+  if (previous && body!.plan !== undefined && previous.plan !== updated.plan) {
+    const { user, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent({
+      event: "account_plan_changed",
+      visitorId: user.id,
+      accountId: actorAccount.id,
+      properties: {
+        accountId: updated.id,
+        previous_plan: previous.plan,
+        new_plan: updated.plan,
+        change_direction: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+        account_user_count: userStore.list(updated.id).length,
+        changedByUserId: user.id,
+      },
+      req,
+    });
   }
   res.json(updated);
 });

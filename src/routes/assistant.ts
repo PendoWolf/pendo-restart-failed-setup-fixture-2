@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import Anthropic from "@anthropic-ai/sdk";
 import { Router } from "express";
+import { trackEvent, truncate } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +26,56 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  const conversationId = truncate(body.conversationId, 64);
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const { content, stopReason } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The model's turn finished: record how the conversation went, which only the server knows.
+    trackEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        message_count: messages.length,
+        user_message_count: messages.filter((message) => message.role === "user").length,
+        reply_length: content.length,
+        refused: stopReason === "refusal",
+        stop_reason: stopReason,
+        model: ASSISTANT_MODEL,
+        upcoming_trips_count: upcomingTrips.length,
+        latency_ms: Date.now() - startedAt,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
+      req,
+    });
     res.json(reply);
   } catch (error) {
+    // The model call failed (such as an API error, rate limit or timeout): the user gets no reply.
+    trackEvent({
+      event: "assistant_reply_failed",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        message_count: messages.length,
+        error_type: error instanceof Error ? error.constructor.name : "unknown",
+        error_status: error instanceof Anthropic.APIError && typeof error.status === "number" ? error.status : null,
+        model: ASSISTANT_MODEL,
+        latency_ms: Date.now() - startedAt,
+      },
+      req,
+    });
     next(error);
   }
 });

@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,23 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A seat was really added to an account. Never send the new user's email, name or password.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_added",
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      accountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? null,
+      account_user_count: userStore.list(user.accountId).length,
+      addedByUserId: actor.id,
+      addedByRole: actor.role,
+    },
+    req,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +92,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +101,23 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a real change of role counts, not a name or email edit or a save with the same role.
+  if (previous && body!.role !== undefined && previous.role !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent({
+      event: "user_role_changed",
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previous_role: previous.role,
+        new_role: updated.role,
+        accountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+      req,
+    });
   }
   res.json(updated);
 });
