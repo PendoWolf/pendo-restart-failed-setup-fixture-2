@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { PendoTrackEvent, trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
@@ -24,6 +26,13 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date ("2026-11-03") to another; negative when `to` is earlier. */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -43,6 +52,22 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was created: record it with the details a click can't carry.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    PendoTrackEvent.TripCreated,
+    { visitorId: user.id, accountId: account.id },
+    {
+      tripId: trip.id,
+      destination: trip.destination.slice(0, 100),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      // Inclusive of both days, so a same-day trip lasts 1 day.
+      tripDurationDays: daysBetween(trip.startDate, trip.endDate) + 1,
+      leadTimeDays: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
+      travelers: trip.travelers,
+    },
+  );
   res.status(201).json(trip);
 });
 

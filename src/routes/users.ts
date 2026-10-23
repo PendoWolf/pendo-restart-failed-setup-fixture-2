@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { PendoTrackEvent, trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,18 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A new member was created (not a 400 or a 409). Never send their email, name or password.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent(
+    PendoTrackEvent.TeamMemberAdded,
+    { visitorId: actor.id, accountId: actorAccount.id },
+    {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      accountMemberCount: userStore.list(user.accountId).length,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,6 +87,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +96,20 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a real permission change counts: the same save also edits names and emails.
+  if (previousRole !== undefined && updated.role !== previousRole) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent(
+      PendoTrackEvent.TeamMemberRoleChanged,
+      { visitorId: actor.id, accountId: actorAccount.id },
+      {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    );
   }
   res.json(updated);
 });
