@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,19 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent("account_created", {
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newAccountId: account.id,
+      plan: account.plan,
+      createdByUserId: actor.id,
+      createdByAccountId: actorAccount.id,
+    },
+  });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +72,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +80,22 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only a real upgrade or downgrade: the plan was sent and differs from the one the account had.
+  if (previous && body!.plan !== undefined && previous.plan !== updated.plan) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent("account_plan_changed", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        accountId: updated.id,
+        previousPlan: previous.plan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+        changedByUserId: actor.id,
+        accountUserCount: userStore.list(updated.id).length,
+      },
+    });
   }
   res.json(updated);
 });
@@ -74,9 +105,19 @@ accountsRouter.delete("/:id", (req, res) => {
     res.status(409).json({ error: "the account still has users" });
     return;
   }
+  // Read the account first: once it's removed its plan is gone.
+  const removed = accountStore.get(req.params.id);
   if (!accountStore.remove(req.params.id)) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  if (removed) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent("account_deleted", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: { accountId: removed.id, plan: removed.plan, deletedByUserId: actor.id },
+    });
   }
   res.status(204).end();
 });

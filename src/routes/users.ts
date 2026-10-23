@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,22 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Never send the new user's email or name to Pendo.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent("user_created", {
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      roleDefaulted: body!.role === undefined,
+      accountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? "unknown",
+      createdByUserId: actor.id,
+      createdByRole: actor.role,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +91,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +101,47 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Only a real permission change: the role was sent and differs from the one the user had.
+  if (previous && body!.role !== undefined && previous.role !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent("user_role_changed", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        accountId: updated.accountId,
+        changedByUserId: actor.id,
+        changedByRole: actor.role,
+        isSelfChange: actor.id === updated.id,
+      },
+    });
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
+  // Read the user first: once they're removed their role and account are gone.
+  const removed = userStore.get(req.params.id);
   if (!userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  if (removed) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent("user_deleted", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        removedUserId: removed.id,
+        removedUserRole: removed.role,
+        accountId: removed.accountId,
+        accountPlan: accountStore.get(removed.accountId)?.plan ?? "unknown",
+        deletedByUserId: actor.id,
+        remainingAccountUserCount: userStore.list(removed.accountId).length,
+      },
+    });
   }
   res.status(204).end();
 });
