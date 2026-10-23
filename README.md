@@ -93,3 +93,5 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_TRACK_EVENT_SECRET` | Shared secret for Pendo's Track Events API, used to track the assistant's prompts and replies (`src/analytics/pendo.ts`); tracking is off without it | none |
+| `PENDO_TRACK_URL` | Pendo's Track Events endpoint for your data region | `https://app.pendo.io/data/track` |
