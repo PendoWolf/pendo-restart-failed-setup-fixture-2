@@ -71,4 +71,6 @@ export interface ChatRequest {
 export interface ChatReply {
   conversationId: string;
   message: { id: string; role: "assistant"; content: string };
+  /** The model that wrote the reply, for the web app's pendo.trackAgent("agent_response") modelUsed. */
+  model: string;
 }

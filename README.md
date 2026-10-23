@@ -53,7 +53,7 @@ The API starts with two demo accounts and three demo users, who all sign in with
 | `POST` | `/api/accounts` | `{ name, plan }` | `201` and the `Account` |
 | `PUT` | `/api/accounts/:id` | any of `{ name, plan }` | the updated `Account` |
 | `DELETE` | `/api/accounts/:id` | | `204`, `404`, or `409` while it still has users |
-| `POST` | `/api/assistant/chat` | `{ conversationId, messages: [{ role, content }] }` | `{ conversationId, message: { id, role: "assistant", content } }` |
+| `POST` | `/api/assistant/chat` | `{ conversationId, messages: [{ role, content }] }` | `{ conversationId, message: { id, role: "assistant", content }, model }` |
 | `GET` | `/health` | | `{ status: "ok" }` |
 
 `Trip` is `{ id, destination, startDate, endDate, travelers }`, with dates like `2026-11-03`.
@@ -68,6 +68,10 @@ sends the whole conversation each time, so the API keeps no chat state. The repl
 Claude model through the Anthropic SDK (`src/assistant/reply.ts`), which reads its key from
 `ANTHROPIC_API_KEY`. The model is told who the signed-in user is, their account, and their
 upcoming trips.
+
+The reply also carries `model`, the model that wrote it, so the web app can report it as
+`modelUsed` in its Pendo `pendo.trackAgent("agent_response", ...)` call, with `message.id` as
+the `messageId` and the request's `conversationId` as the `conversationId`.
 
 ## Structure
 
