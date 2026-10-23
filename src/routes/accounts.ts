@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,15 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // Pendo: a new customer account was created on its starting plan.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("account_created", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { newAccountId: created.id, plan: created.plan },
+  });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +68,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +76,20 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Pendo: a subscription change, only when the saved plan differs from the account's previous plan.
+  if (previous && previous.plan !== updated.plan) {
+    const { user, account } = res.locals as AuthLocals;
+    trackEvent("account_plan_changed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        targetAccountId: updated.id,
+        previousPlan: previous.plan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+      },
+    });
   }
   res.json(updated);
 });

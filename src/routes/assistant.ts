@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,46 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const conversationId = body.conversationId;
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
-      conversationId: body.conversationId,
+      conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Pendo: the model produced a reply. Never sends message content.
+    trackEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: conversationId.slice(0, 100),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        upcomingTripsCount: upcomingTrips.length,
+        model: ASSISTANT_MODEL,
+        stopReason: stopReason ?? "unknown",
+        refused: stopReason === "refusal",
+        replyLength: content.length,
+        latencyMs: Date.now() - startedAt,
+        plan: account.plan,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // Pendo: the call to the model failed; next(error) turns it into a 500.
+    trackEvent("assistant_reply_failed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: conversationId.slice(0, 100),
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : "UnknownError",
+        latencyMs: Date.now() - startedAt,
+      },
+    });
     next(error);
   }
 });

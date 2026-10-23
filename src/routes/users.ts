@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,19 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a team member was created (after validation and the duplicate-email check). Never sends the
+  // email, name or password.
+  const { user: addedBy, account: addedByAccount } = res.locals as AuthLocals;
+  trackEvent("team_member_added", {
+    visitorId: addedBy.id,
+    accountId: addedByAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      newUserAccountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? "unknown",
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +88,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +97,20 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo: a permission change, only when the request set a role different from the stored one.
+  if (previous && body!.role !== undefined && previous.role !== updated.role) {
+    const { user: changedBy, account: changedByAccount } = res.locals as AuthLocals;
+    trackEvent("user_role_changed", {
+      visitorId: changedBy.id,
+      accountId: changedByAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    });
   }
   res.json(updated);
 });

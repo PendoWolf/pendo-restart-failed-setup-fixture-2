@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { trackEvent, type TrackProperties } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +26,19 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** The trip's details as Pendo Track Event properties, with how many days it lasts (start and end day included). */
+function tripProperties(trip: Trip): TrackProperties {
+  const tripLengthDays = (Date.parse(trip.endDate) - Date.parse(trip.startDate)) / 86_400_000 + 1;
+  return {
+    tripId: trip.id,
+    destination: trip.destination.slice(0, 100),
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    tripLengthDays,
+    travelers: trip.travelers,
+  };
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -43,6 +58,9 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // Pendo: a trip passed validation and was stored.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("trip_created", { visitorId: user.id, accountId: account.id, properties: tripProperties(trip) });
   res.status(201).json(trip);
 });
 
@@ -62,6 +80,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +91,16 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // Pendo: a trip update passed validation and was saved, with which of its details changed.
+  const { user, account } = res.locals as AuthLocals;
+  const changedFields = (["destination", "startDate", "endDate", "travelers"] as const).filter(
+    (field) => previous?.[field] !== trip[field],
+  );
+  trackEvent("trip_updated", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { ...tripProperties(trip), changedFields: changedFields.join(",") },
+  });
   res.json(trip);
 });
 
