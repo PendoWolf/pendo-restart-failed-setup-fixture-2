@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a team member was added. Never includes their email or name.
+  const { user: actor, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "user_created",
+    { visitorId: actor.id, accountId: account.id },
+    {
+      newUserId: user.id,
+      role: user.role,
+      roleDefaulted: body!.role === undefined,
+      accountId: user.accountId,
+      teamSizeAfter: userStore.list(user.accountId).length,
+      createdByUserId: actor.id,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,21 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo: a permissions change, only when the role actually changed.
+  if (previous && body!.role !== undefined && previous.role !== updated.role) {
+    const { user: actor, account } = res.locals as AuthLocals;
+    trackPendoEvent(
+      "user_role_changed",
+      { visitorId: actor.id, accountId: account.id },
+      {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        accountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+    );
   }
   res.json(updated);
 });

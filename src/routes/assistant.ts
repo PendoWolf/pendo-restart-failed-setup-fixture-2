@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,38 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const { conversationId } = body;
+  const upcomingTrips = tripStore.upcoming();
+  const startedAt = Date.now();
+  // Pendo: how the assistant's reply turned out. Never includes message content.
+  const trackReply = (outcome: "answered" | "refused" | "error", stopReason: string | null, replyLength: number) => {
+    trackPendoEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        conversationId: conversationId.slice(0, 64),
+        outcome,
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        replyLength,
+        model: ASSISTANT_MODEL,
+        upcomingTripCount: upcomingTrips.length,
+        stopReason,
+        latencyMs: Date.now() - startedAt,
+        accountPlan: account.plan,
+      },
+    );
+  };
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const { content, stopReason } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    trackReply(stopReason === "refusal" ? "refused" : "answered", stopReason, content.length);
     const reply: ChatReply = {
-      conversationId: body.conversationId,
+      conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
     res.json(reply);
   } catch (error) {
+    trackReply("error", null, 0);
     next(error);
   }
 });
