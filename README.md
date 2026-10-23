@@ -77,6 +77,7 @@ upcoming trips.
 - `src/routes/` the auth, trips, users, accounts and assistant routes
 - `src/store/` in-memory stores for trips, users, accounts and sessions
 - `src/assistant/reply.ts` the assistant's replies, from the language model
+- `src/analytics/pendo.ts` server-side Pendo Track Events
 
 ## Run
 
@@ -93,3 +94,22 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo integration key for server-side Track Events; tracking is off without it | none |
+| `PENDO_DATA_HOST` | Pendo data host Track Events are sent to | `data.pendo-dev.pendo-dev.com` |
+
+## Pendo Track Events
+
+`src/analytics/pendo.ts` sends server-side Track Events to Pendo's `/data/track` API, without blocking the
+response; a failed send is only logged. Each event's `visitorId` is the signed-in user (the one who acted) and its
+`accountId` is their account.
+
+| Event | Fires when |
+| --- | --- |
+| `user_signed_in` | `POST /api/auth/login` accepts the password and starts a session |
+| `trip_created` | `POST /api/trips` saves a valid trip |
+| `trip_updated` | `PUT /api/trips/:id` saves valid new details |
+| `assistant_reply_generated` | the model finishes a reply for `POST /api/assistant/chat` (counts and flags only) |
+| `user_added` | `POST /api/users` adds a new user |
+| `user_role_changed` | `PUT /api/users/:id` saves a different role |
+| `account_created` | `POST /api/accounts` saves a new account |
+| `account_plan_changed` | `PUT /api/accounts/:id` saves a different plan |
