@@ -77,6 +77,7 @@ upcoming trips.
 - `src/routes/` the auth, trips, users, accounts and assistant routes
 - `src/store/` in-memory stores for trips, users, accounts and sessions
 - `src/assistant/reply.ts` the assistant's replies, from the language model
+- `src/analytics/track-agent.ts` sends the assistant's Pendo trackAgent events (prompt, agent_response)
 
 ## Run
 
@@ -93,3 +94,5 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_INTEGRATION_KEY` | Pendo integration key; the assistant's trackAgent events are sent only when it's set | none |
+| `PENDO_DATA_HOST` | Pendo data host for your region | `https://app.pendo.io` |
