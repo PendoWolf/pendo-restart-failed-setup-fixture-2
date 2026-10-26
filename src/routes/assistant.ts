@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncateForPendo } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, ASSISTANT_REFUSAL_REPLY, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,44 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const conversationId = truncateForPendo(body.conversationId, 64);
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const content = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Pendo: the assistant answered (or refused) this chat turn.
+    trackPendoEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        refused: content === ASSISTANT_REFUSAL_REPLY,
+        replyLength: content.length,
+        model: ASSISTANT_MODEL,
+        upcomingTripCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // Pendo: the model call failed, so the request ends in a 500.
+    trackPendoEvent("assistant_reply_failed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        accountPlan: account.plan,
+      },
+    });
     next(error);
   }
 });

@@ -1,8 +1,29 @@
 import { Router } from "express";
+import { trackPendoEvent, truncateForPendo, type PendoPropertyValue } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another (negative when `to` is earlier). */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** The trip's details for its Pendo Track Events. */
+function tripProperties(trip: Trip): Record<string, PendoPropertyValue> {
+  return {
+    tripId: trip.id,
+    destination: truncateForPendo(trip.destination),
+    travelers: trip.travelers,
+    // Calendar days the trip covers, counting both the start and end dates.
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
+    startDate: trip.startDate,
+  };
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +64,9 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // Pendo: a trip passed validation and was saved.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent("trip_created", { visitorId: user.id, accountId: account.id, properties: tripProperties(trip) });
   res.status(201).json(trip);
 });
 
@@ -72,6 +96,9 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // Pendo: the trip's changes passed validation and were saved.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent("trip_updated", { visitorId: user.id, accountId: account.id, properties: tripProperties(trip) });
   res.json(trip);
 });
 

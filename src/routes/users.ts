@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a new teammate was added. The event is credited to the signed-in user who added them.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  const memberAccount = accountStore.get(user.accountId);
+  trackPendoEvent("team_member_added", {
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      ...(memberAccount && { accountPlan: memberAccount.plan }),
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,20 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  if (previous && previous.role !== updated.role) {
+    // Pendo: the user's permissions changed (admin <-> member).
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent("user_role_changed", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    });
   }
   res.json(updated);
 });

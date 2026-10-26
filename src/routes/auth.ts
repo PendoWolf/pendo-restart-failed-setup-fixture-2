@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -17,10 +18,28 @@ authRouter.post("/login", (req, res) => {
   const user = userStore.verifyPassword(body.email, body.password);
   const account = user ? accountStore.get(user.accountId) : undefined;
   if (!user || !account) {
+    // Pendo: a failed sign-in attempt. It's credited to the user whose email was tried, when there is one.
+    const attempted = userStore.findByEmail(body.email);
+    const attemptedAccount = attempted ? accountStore.get(attempted.accountId) : undefined;
+    trackPendoEvent("user_signed_in", {
+      visitorId: attempted?.id ?? "system",
+      accountId: attemptedAccount?.id ?? "system",
+      properties: {
+        outcome: "failure",
+        ...(attempted && { userId: attempted.id, userRole: attempted.role }),
+        ...(attemptedAccount && { accountPlan: attemptedAccount.plan }),
+      },
+    });
     res.status(401).json({ error: "wrong email or password" });
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // Pendo: the credentials checked out and a session started.
+  trackPendoEvent("user_signed_in", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { outcome: "success", userId: user.id, userRole: user.role, accountPlan: account.plan },
+  });
   res.json(session);
 });
 
