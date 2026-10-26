@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { daysBetween, todayIsoDate, trackEvent, truncate } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
@@ -43,6 +45,22 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // Pendo Track Event: the trip passed validation and was saved.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      tripDurationDays: daysBetween(trip.startDate, trip.endDate),
+      daysUntilStart: daysBetween(todayIsoDate(), trip.startDate),
+      travelers: trip.travelers,
+    },
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +80,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +91,22 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // Pendo Track Event: the edited trip passed validation and was saved, with which of its details changed.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_updated",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      tripDurationDays: daysBetween(trip.startDate, trip.endDate),
+      travelers: trip.travelers,
+      destinationChanged: previous?.destination !== trip.destination,
+      datesChanged: previous?.startDate !== trip.startDate || previous?.endDate !== trip.endDate,
+      travelersChanged: previous?.travelers !== trip.travelers,
+    },
+  });
   res.json(trip);
 });
 
