@@ -4,6 +4,9 @@ import type { Account, IncomingChatMessage, Trip, User } from "../types.js";
 /** The model the Tripwise Assistant answers with. */
 export const ASSISTANT_MODEL = "claude-opus-5-5";
 
+/** The Tripwise Assistant's agent id in Pendo, sent with every trackAgent event. */
+export const ASSISTANT_PENDO_AGENT_ID = "cPeaMT3bOodM1UzzCsYmF3PMNdU";
+
 // The SDK reads the key from the ANTHROPIC_API_KEY environment variable.
 const anthropic = new Anthropic();
 
