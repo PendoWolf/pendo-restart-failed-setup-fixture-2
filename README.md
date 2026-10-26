@@ -69,6 +69,11 @@ Claude model through the Anthropic SDK (`src/assistant/reply.ts`), which reads i
 `ANTHROPIC_API_KEY`. The model is told who the signed-in user is, their account, and their
 upcoming trips.
 
+Each chat request is tracked for Pendo Agent Analytics (`src/analytics/pendo.ts`): a `prompt` event for
+the user's newest message and an `agent_response` event for the reply, whose `messageId` is the reply's
+`message.id`. The events go to Pendo's Track Events API for the signed-in user and account, only when
+`PENDO_TRACK_EVENT_SECRET` is set.
+
 ## Structure
 
 - `src/index.ts` starts the server
@@ -93,3 +98,5 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo Track Event shared secret, for the assistant's Agent Analytics events | none (no events sent) |
+| `PENDO_TRACK_URL` | Pendo Track Events endpoint for your region | `https://app.pendo.io/data/track` |
