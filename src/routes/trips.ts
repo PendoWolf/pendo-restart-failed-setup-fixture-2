@@ -1,8 +1,21 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another (negative when `to` is earlier). */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS);
+}
+
+/** How many calendar days the trip spans, counting its first and last day. */
+function tripLengthDays(trip: NewTrip): number {
+  return daysBetween(trip.startDate, trip.endDate) + 1;
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +56,22 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved: Trip Planning's activation milestone.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: trip.destination,
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      tripLengthDays: tripLengthDays(trip),
+      travelers: trip.travelers,
+      daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
+    },
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +91,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +102,21 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The trip's new details were saved: compare them with the stored trip to see what changed.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent({
+    event: "trip_updated",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destinationChanged: previous?.destination !== trip.destination,
+      datesChanged: previous?.startDate !== trip.startDate || previous?.endDate !== trip.endDate,
+      travelersChanged: previous?.travelers !== trip.travelers,
+      travelers: trip.travelers,
+      tripLengthDays: tripLengthDays(trip),
+    },
+  });
   res.json(trip);
 });
 

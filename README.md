@@ -93,3 +93,20 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo Track Event shared secret; without it no Track Events are sent | none |
+| `PENDO_DATA_HOST` | Pendo data host the Track Events go to | `data.pendo-dev.pendo-dev.com` |
+
+## Pendo Track Events
+
+`src/analytics/pendo.ts` sends server-side Pendo Track Events to `POST https://<PENDO_DATA_HOST>/data/track`, with
+the signed-in user as the visitor and their account as the account. Sending never blocks or fails a request.
+
+| Event | Fires when | Route |
+| --- | --- | --- |
+| `assistant_reply_generated` | the assistant's reply (or refusal) is ready | `POST /api/assistant/chat` |
+| `trip_created` | a valid trip is saved (`201`) | `POST /api/trips` |
+| `trip_updated` | a trip's new details are saved | `PUT /api/trips/:id` |
+| `user_added_to_account` | a new user is saved (`201`) | `POST /api/users` |
+| `user_role_changed` | a saved update changes the user's role | `PUT /api/users/:id` |
+| `account_created` | a valid account is saved (`201`) | `POST /api/accounts` |
+| `account_plan_changed` | a saved update changes the account's plan | `PUT /api/accounts/:id` |
