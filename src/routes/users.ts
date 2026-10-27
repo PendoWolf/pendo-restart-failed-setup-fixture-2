@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The user was created; a 400 or a 409 for a duplicate email never gets here.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "team_member_added",
+    { visitorId: actor.id, accountId: actorAccount.id },
+    {
+      newUserId: user.id,
+      role: user.role,
+      // The account the new user joined, which may not be the signed-in user's own.
+      targetAccountId: user.accountId,
+      accountUserCount: userStore.list(user.accountId).length,
+      addedByUserId: actor.id,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,14 +89,31 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.role !== undefined && { role: body!.role }),
   });
-  if (!updated) {
+  if (!previous || !updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // A permission change: only when the saved role differs from the one before, not on every save.
+  if (previous.role !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent(
+      "user_role_changed",
+      { visitorId: actor.id, accountId: actorAccount.id },
+      {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        // The changed user's account, which may not be the signed-in user's own.
+        targetAccountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+    );
   }
   res.json(updated);
 });

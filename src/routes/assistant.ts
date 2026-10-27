@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, ASSISTANT_REFUSAL_REPLY, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -25,15 +26,27 @@ assistantRouter.post("/chat", async (req, res, next) => {
   }
   const { user, account } = res.locals as AuthLocals;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const content = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The model produced a reply (or refused): only known once writeAssistantReply resolves.
+    trackPendoEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        conversationId: body.conversationId.slice(0, 100),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        replyLength: content.length,
+        refused: content === ASSISTANT_REFUSAL_REPLY,
+        model: ASSISTANT_MODEL,
+        upcomingTripCount: upcomingTrips.length,
+        plan: account.plan,
+      },
+    );
     res.json(reply);
   } catch (error) {
     next(error);
