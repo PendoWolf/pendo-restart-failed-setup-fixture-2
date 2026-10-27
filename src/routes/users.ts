@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,21 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a team member was added, after validation and the duplicate-email check. Never with their email,
+  // name or password.
+  const { user: creator, account: creatorAccount } = res.locals as AuthLocals;
+  trackPendoEvent("team_member_added", {
+    visitorId: creator.id,
+    accountId: creatorAccount.id,
+    properties: {
+      new_user_id: user.id,
+      role: user.role,
+      account_id: user.accountId,
+      account_plan: accountStore.get(user.accountId)?.plan,
+      created_by_user_id: creator.id,
+      created_by_role: creator.role,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +90,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +99,21 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo: the user's role (their permissions) changed.
+  if (previous && previous.role !== updated.role) {
+    const { user: changer, account: changerAccount } = res.locals as AuthLocals;
+    trackPendoEvent("user_role_changed", {
+      visitorId: changer.id,
+      accountId: changerAccount.id,
+      properties: {
+        target_user_id: updated.id,
+        previous_role: previous.role,
+        new_role: updated.role,
+        account_id: updated.accountId,
+        changed_by_user_id: changer.id,
+      },
+    });
   }
   res.json(updated);
 });

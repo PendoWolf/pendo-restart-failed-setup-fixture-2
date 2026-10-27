@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -7,16 +8,32 @@ import type { SessionResponse, SignInRequest } from "../types.js";
 
 export const authRouter = Router();
 
+type SignInFailureReason = "missing_credentials" | "invalid_credentials" | "account_not_found";
+
+/**
+ * Pendo: a sign-in attempt was rejected. Sent anonymously, since there's no signed-in user, and never with the
+ * email or password that were tried.
+ */
+function trackSignInFailed(failureReason: SignInFailureReason, statusCode: number): void {
+  trackPendoEvent("sign_in_failed", {
+    visitorId: "anonymous",
+    accountId: "anonymous",
+    properties: { failure_reason: failureReason, status_code: statusCode },
+  });
+}
+
 // Signs a user in with their email and password, and returns a bearer token with the user and their account.
 authRouter.post("/login", (req, res) => {
   const body = req.body as Partial<SignInRequest> | undefined;
   if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
+    trackSignInFailed("missing_credentials", 400);
     res.status(400).json({ error: "email and password are required" });
     return;
   }
   const user = userStore.verifyPassword(body.email, body.password);
   const account = user ? accountStore.get(user.accountId) : undefined;
   if (!user || !account) {
+    trackSignInFailed(user ? "account_not_found" : "invalid_credentials", 401);
     res.status(401).json({ error: "wrong email or password" });
     return;
   }

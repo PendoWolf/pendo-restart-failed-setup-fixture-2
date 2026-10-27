@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,38 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
-  try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+  const upcomingTrips = tripStore.upcoming();
+  const startedAt = Date.now();
+  // Pendo: the assistant's reply is ready, or the call to the model failed.
+  const trackReply = (outcome: "answered" | "refused" | "failed", replyLength: number) => {
+    trackPendoEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversation_id: body.conversationId,
+        message_count: messages.length,
+        user_message_count: messages.filter((message) => message.role === "user").length,
+        outcome,
+        refused: outcome === "refused",
+        reply_length: replyLength,
+        upcoming_trip_count: upcomingTrips.length,
+        model: ASSISTANT_MODEL,
+        latency_ms: Date.now() - startedAt,
+        account_id: account.id,
+        account_plan: account.plan,
+      },
     });
+  };
+  try {
+    const { text: content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    trackReply(refused ? "refused" : "answered", content.length);
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
     res.json(reply);
   } catch (error) {
+    trackReply("failed", 0);
     next(error);
   }
 });
