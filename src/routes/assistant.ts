@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { trackAgent } from "../assistant/pendo.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,6 +25,17 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  // The web app sends the whole conversation, so the user's new prompt is its last message.
+  const prompt = messages[messages.length - 1];
+  if (prompt.role === "user") {
+    trackAgent("prompt", {
+      conversationId: body.conversationId,
+      messageId: randomUUID(),
+      content: prompt.content,
+      suggestedPrompt: false,
+      fileUploaded: false,
+    });
+  }
   try {
     const content = await writeAssistantReply(messages, {
       user,
@@ -34,6 +46,13 @@ assistantRouter.post("/chat", async (req, res, next) => {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    trackAgent("agent_response", {
+      conversationId: reply.conversationId,
+      messageId: reply.message.id,
+      content: reply.message.content,
+      modelUsed: ASSISTANT_MODEL,
+      toolsUsed: [],
+    });
     res.json(reply);
   } catch (error) {
     next(error);
