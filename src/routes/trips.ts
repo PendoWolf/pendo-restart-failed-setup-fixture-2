@@ -1,8 +1,29 @@
 import { Router } from "express";
+import { clip, trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another (negative when `to` is earlier). */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** The trip details the trip_created and trip_updated Track Events carry. */
+function tripProperties(trip: Trip) {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    tripId: trip.id,
+    destination: clip(trip.destination),
+    travelers: trip.travelers,
+    // Counting both the first and the last day, so a same-day trip is 1 day long.
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    daysUntilStart: daysBetween(today, trip.startDate),
+  };
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +64,13 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip was saved: record its party size, length and how far ahead it's booked.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent(
+    "trip_created",
+    { visitorId: user.id, accountId: account.id },
+    { ...tripProperties(trip), startDate: trip.startDate },
+  );
   res.status(201).json(trip);
 });
 
@@ -72,6 +100,9 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The update was saved: record the trip's new details.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("trip_updated", { visitorId: user.id, accountId: account.id }, tripProperties(trip));
   res.json(trip);
 });
 

@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The user was created: record the role and account they were added with, by the signed-in admin.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  const memberAccount = accountStore.get(user.accountId);
+  trackEvent(
+    "team_member_added",
+    { visitorId: actor.id, accountId: actorAccount.id },
+    {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      accountPlan: memberAccount?.plan ?? "unknown",
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,20 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // A permission change: only when the role actually moved, not on every save.
+  if (previousRole !== undefined && previousRole !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent(
+      "user_role_changed",
+      { visitorId: actor.id, accountId: actorAccount.id },
+      {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    );
   }
   res.json(updated);
 });
