@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent, truncate } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,49 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const conversationId = truncate(body.conversationId);
   try {
-    const content = await writeAssistantReply(messages, {
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason, model } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Pendo: the model call finished and the reply is being sent.
+    trackEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        messageId: reply.message.id,
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        upcomingTripsCount: upcomingTrips.length,
+        model,
+        stopReason: stopReason ?? "unknown",
+        wasRefusal: stopReason === "refusal",
+        replyLength: content.length,
+      },
+      req,
+    });
     res.json(reply);
   } catch (error) {
+    // Pendo: the model call failed, so the user gets a 500 instead of a reply.
+    trackEvent("assistant_reply_failed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+      },
+      req,
+    });
     next(error);
   }
 });

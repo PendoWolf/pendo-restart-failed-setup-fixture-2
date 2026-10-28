@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a team member was added. Never send their email address, name or password.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent("team_member_created", {
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      roleDefaulted: body!.role === undefined,
+      memberAccountId: user.accountId,
+      createdByUserId: actor.id,
+    },
+    req,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +99,43 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Pendo: only when the role (the user's permissions) actually changed.
+  if (previous && body!.role !== undefined && body!.role !== previous.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent("team_member_role_changed", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        memberAccountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+      req,
+    });
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
-  if (!userStore.remove(req.params.id)) {
+  const removed = userStore.get(req.params.id);
+  if (!removed || !userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Pendo: the team member was really removed.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent("team_member_removed", {
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      removedUserId: removed.id,
+      role: removed.role,
+      memberAccountId: removed.accountId,
+      removedByUserId: actor.id,
+    },
+    req,
+  });
   res.status(204).end();
 });
