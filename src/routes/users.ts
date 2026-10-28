@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,19 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The user was really created (no 400 or 409): the account's team grew. No email or name goes to Pendo.
+  const actor = (res.locals as AuthLocals).user;
+  void trackPendoEvent("team_member_added", {
+    visitorId: actor.id,
+    accountId: actor.accountId,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      accountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +88,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +97,20 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only when the saved role differs from the role before the update.
+  if (previous && previous.role !== updated.role) {
+    const actor = (res.locals as AuthLocals).user;
+    void trackPendoEvent("user_role_changed", {
+      visitorId: actor.id,
+      accountId: actor.accountId,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        accountId: updated.accountId,
+      },
+    });
   }
   res.json(updated);
 });

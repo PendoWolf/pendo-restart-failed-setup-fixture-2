@@ -1,8 +1,21 @@
 import { Router } from "express";
+import { trackPendoEvent, truncate } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another. */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** How many days the trip covers, counting its first and last day. */
+function tripLengthDays(trip: Trip): number {
+  return daysBetween(trip.startDate, trip.endDate) + 1;
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +56,22 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip was really created (not a 400): send it to Pendo with its length, party size and lead time.
+  const { user, account } = res.locals as AuthLocals;
+  void trackPendoEvent("trip_created", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      travelers: trip.travelers,
+      tripLengthDays: tripLengthDays(trip),
+      daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
+      accountPlan: account.plan,
+    },
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +91,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +102,21 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The update was saved (not a 400 or 404): send Pendo what changed compared with the trip before it.
+  const { user, account } = res.locals as AuthLocals;
+  void trackPendoEvent("trip_updated", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      travelers: trip.travelers,
+      previousTravelers: previous?.travelers,
+      datesChanged: previous ? previous.startDate !== trip.startDate || previous.endDate !== trip.endDate : undefined,
+      destinationChanged: previous ? previous.destination !== trip.destination : undefined,
+      tripLengthDays: tripLengthDays(trip),
+    },
+  });
   res.json(trip);
 });
 

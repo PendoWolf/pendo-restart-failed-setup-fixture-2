@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncate } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,46 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const conversationId = body.conversationId;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+    const upcomingTrips = tripStore.upcoming();
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    // The model answered (or refused). Only counts and flags go to Pendo, never the message text.
+    void trackPendoEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(conversationId),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        replyLength: content.length,
+        refused,
+        model: ASSISTANT_MODEL,
+        upcomingTripCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
     });
     const reply: ChatReply = {
-      conversationId: body.conversationId,
+      conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
     res.json(reply);
   } catch (error) {
+    // The model call threw (missing key, rate limit, API error): record the friction, then let the error
+    // handler answer.
+    const status = (error as { status?: unknown } | null)?.status;
+    void trackPendoEvent("assistant_reply_failed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(conversationId),
+        messageCount: messages.length,
+        errorType: error instanceof Error ? truncate(error.constructor.name, 50) : typeof error,
+        errorStatus: typeof status === "number" ? status : undefined,
+        model: ASSISTANT_MODEL,
+      },
+    });
     next(error);
   }
 });
