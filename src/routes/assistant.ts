@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { TRIPWISE_ASSISTANT_AGENT_ID, trackAgent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -23,6 +24,17 @@ assistantRouter.post("/chat", async (req, res, next) => {
     res.status(400).json({ error: "the conversation must start with a user message" });
     return;
   }
+  const conversationId = body.conversationId;
+  // The last message is the one the user just sent; the ones before it were tracked on earlier requests.
+  const latest = messages[messages.length - 1];
+  if (latest.role === "user") {
+    trackAgent("prompt", {
+      agentId: TRIPWISE_ASSISTANT_AGENT_ID,
+      conversationId,
+      messageId: randomUUID(),
+      content: latest.content,
+    });
+  }
   const { user, account } = res.locals as AuthLocals;
   try {
     const content = await writeAssistantReply(messages, {
@@ -31,9 +43,16 @@ assistantRouter.post("/chat", async (req, res, next) => {
       upcomingTrips: tripStore.upcoming(),
     });
     const reply: ChatReply = {
-      conversationId: body.conversationId,
+      conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    trackAgent("agent_response", {
+      agentId: TRIPWISE_ASSISTANT_AGENT_ID,
+      conversationId,
+      messageId: reply.message.id,
+      content,
+      modelUsed: ASSISTANT_MODEL,
+    });
     res.json(reply);
   } catch (error) {
     next(error);
