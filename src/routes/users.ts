@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: a seat was added to an account. No email or name, which are personal data.
+  const { user: addedBy, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_added",
+    visitorId: addedBy.id,
+    accountId: account.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      memberAccountId: user.accountId,
+      addedByUserId: addedBy.id,
+      addedByRole: addedBy.role,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,22 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo: the user's permissions changed. Only fires when the role actually differs from before.
+  if (body!.role !== undefined && previousRole !== undefined && previousRole !== updated.role) {
+    const { user: changedBy, account } = res.locals as AuthLocals;
+    trackEvent({
+      event: "team_member_role_changed",
+      visitorId: changedBy.id,
+      accountId: account.id,
+      properties: {
+        userId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        memberAccountId: updated.accountId,
+        changedByUserId: changedBy.id,
+      },
+    });
   }
   res.json(updated);
 });

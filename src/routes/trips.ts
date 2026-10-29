@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { trackEvent, truncate } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +26,23 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** The trip's length in calendar days, counting both the start and end dates. */
+function tripLengthDays(trip: Trip): number {
+  return Math.round((Date.parse(trip.endDate) - Date.parse(trip.startDate)) / 86_400_000) + 1;
+}
+
+/** The trip details every trip Track Event carries. */
+function tripProperties(trip: Trip) {
+  return {
+    tripId: trip.id,
+    destination: truncate(trip.destination),
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    tripLengthDays: tripLengthDays(trip),
+    travelers: trip.travelers,
+  };
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -42,6 +61,14 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // Pendo: a trip was saved, which a Save click alone can't tell apart from a 400.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { ...tripProperties(trip), userRole: user.role },
   });
   res.status(201).json(trip);
 });
@@ -72,6 +99,14 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // Pendo: the trip's new details were saved (not a 400 or 404).
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_updated",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: tripProperties(trip),
+  });
   res.json(trip);
 });
 
