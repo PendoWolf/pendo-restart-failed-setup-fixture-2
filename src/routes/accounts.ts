@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,15 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // Pendo: the new customer account was saved, with the plan it started on.
+  const actor = res.locals as AuthLocals;
+  trackPendoEvent(
+    "account_created",
+    { visitorId: actor.user.id, accountId: actor.account.id },
+    { account_id: created.id, plan: created.plan },
+  );
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +68,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +76,21 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Pendo: only when the saved plan differs from the old one (an upgrade or downgrade).
+  if (previous && previous.plan !== updated.plan) {
+    const actor = res.locals as AuthLocals;
+    trackPendoEvent(
+      "account_plan_changed",
+      { visitorId: actor.user.id, accountId: actor.account.id },
+      {
+        account_id: updated.id,
+        previous_plan: previous.plan,
+        new_plan: updated.plan,
+        change_direction: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+        account_user_count: userStore.list(updated.id).length,
+      },
+    );
   }
   res.json(updated);
 });

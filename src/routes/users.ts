@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,19 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo: the user was created in the account. Never their email or name.
+  const actor = res.locals as AuthLocals;
+  trackPendoEvent(
+    "team_member_added",
+    { visitorId: actor.user.id, accountId: actor.account.id },
+    {
+      new_user_id: user.id,
+      role: user.role,
+      account_id: user.accountId,
+      account_plan: accountStore.get(user.accountId)?.plan ?? "unknown",
+      account_user_count: userStore.list(user.accountId).length,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,6 +88,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +97,20 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo: only when the saved role differs from the old one.
+  if (previous && previous.role !== updated.role) {
+    const actor = res.locals as AuthLocals;
+    trackPendoEvent(
+      "user_role_changed",
+      { visitorId: actor.user.id, accountId: actor.account.id },
+      {
+        target_user_id: updated.id,
+        previous_role: previous.role,
+        new_role: updated.role,
+        account_id: updated.accountId,
+      },
+    );
   }
   res.json(updated);
 });
