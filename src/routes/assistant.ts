@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,45 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  // Kept short so the Track Event's properties stay within Pendo's size limit.
+  const conversationId = body.conversationId.slice(0, 100);
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The model's reply is ready: records whether it answered or refused, and how much context it had.
+    trackPendoEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        refused,
+        replyLength: content.length,
+        upcomingTripsCount: upcomingTrips.length,
+        model: ASSISTANT_MODEL,
+        accountPlan: account.plan,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // The language-model call failed, so the user got no reply.
+    trackPendoEvent({
+      event: "assistant_reply_failed",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId,
+        messageCount: messages.length,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        model: ASSISTANT_MODEL,
+      },
+    });
     next(error);
   }
 });
