@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,19 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo Track Event: a new teammate joined an account.
+  const { user: createdBy } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "team_member_added",
+    { visitorId: createdBy.id, accountId: user.accountId },
+    {
+      newUserId: user.id,
+      role: user.role,
+      accountSize: userStore.list(user.accountId).length,
+      createdByUserId: createdBy.id,
+      createdByRole: createdBy.role,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,6 +88,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +98,40 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Pendo Track Event: only when a different role was really saved.
+  if (previous && body!.role !== undefined && previous.role !== updated.role) {
+    const { user: changedBy } = res.locals as AuthLocals;
+    trackPendoEvent(
+      "user_role_changed",
+      { visitorId: changedBy.id, accountId: updated.accountId },
+      {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        changedByUserId: changedBy.id,
+      },
+    );
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
-  if (!userStore.remove(req.params.id)) {
+  const removed = userStore.get(req.params.id);
+  if (!removed || !userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Pendo Track Event: the teammate was really removed from their account.
+  const { user: removedBy } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "team_member_removed",
+    { visitorId: removedBy.id, accountId: removed.accountId },
+    {
+      removedUserId: removed.id,
+      removedUserRole: removed.role,
+      remainingAccountSize: userStore.list(removed.accountId).length,
+      removedByUserId: removedBy.id,
+    },
+  );
   res.status(204).end();
 });

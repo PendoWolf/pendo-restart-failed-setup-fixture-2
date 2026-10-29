@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncateProperty } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, ASSISTANT_REFUSAL_REPLY, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,47 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  const startedAt = Date.now();
+  // Pendo Track Event: the model's reply came back (or failed), with how long the conversation is.
+  const conversationProperties = {
+    conversationId: truncateProperty(body.conversationId, 64),
+    messageCount: messages.length,
+    userMessageCount: messages.filter((message) => message.role === "user").length,
+    upcomingTripCount: upcomingTrips.length,
+    model: ASSISTANT_MODEL,
+    accountPlan: account.plan,
+  };
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const content = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    trackPendoEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        ...conversationProperties,
+        refused: content === ASSISTANT_REFUSAL_REPLY,
+        replyLength: content.length,
+        latencyMs: Date.now() - startedAt,
+        outcome: "success",
+      },
+    );
     res.json(reply);
   } catch (error) {
+    trackPendoEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        ...conversationProperties,
+        refused: false,
+        replyLength: 0,
+        latencyMs: Date.now() - startedAt,
+        outcome: "error",
+      },
+    );
     next(error);
   }
 });

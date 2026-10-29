@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -21,6 +22,12 @@ authRouter.post("/login", (req, res) => {
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // Pendo Track Event: the password checked out and a session started. Never send the email or password.
+  trackPendoEvent(
+    "user_signed_in",
+    { visitorId: user.id, accountId: account.id },
+    { userId: user.id, accountPlan: account.plan, userRole: user.role },
+  );
   res.json(session);
 });
 
