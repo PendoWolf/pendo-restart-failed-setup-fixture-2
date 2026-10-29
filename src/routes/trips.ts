@@ -1,8 +1,21 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another (negative when `to` is earlier). */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** How many calendar days the trip spans, counting its first and last day. */
+function tripDurationDays(trip: Trip): number {
+  return daysBetween(trip.startDate, trip.endDate) + 1;
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +56,21 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved, which a "create trip" click alone can't show.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("trip_created", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: trip.destination.slice(0, 100),
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      tripDurationDays: tripDurationDays(trip),
+      daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
+      travelers: trip.travelers,
+    },
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +90,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -71,6 +100,26 @@ tripsRouter.put("/:id", (req, res) => {
   if (!trip) {
     res.status(404).json({ error: "trip not found" });
     return;
+  }
+  if (previous) {
+    // The update was saved: record which of the trip's details changed.
+    const changedFields = (["destination", "startDate", "endDate", "travelers"] as const).filter(
+      (field) => previous[field] !== trip[field],
+    );
+    const { user, account } = res.locals as AuthLocals;
+    trackEvent("trip_updated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        tripId: trip.id,
+        changedFields,
+        destination: trip.destination.slice(0, 100),
+        tripDurationDays: tripDurationDays(trip),
+        travelers: trip.travelers,
+        previousTravelers: previous.travelers,
+        datesChanged: changedFields.includes("startDate") || changedFields.includes("endDate"),
+      },
+    });
   }
   res.json(trip);
 });

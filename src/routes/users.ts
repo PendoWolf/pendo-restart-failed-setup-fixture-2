@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The account's team grew. Email and name are left out on purpose (PII).
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent("team_member_added", {
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      accountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? "unknown",
+      accountUserCount: userStore.list(user.accountId).length,
+      addedByUserId: actor.id,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,21 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a real change of role (admin <-> member) counts, not name or email edits.
+  if (previous && previous.role !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent("user_role_changed", {
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        accountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+    });
   }
   res.json(updated);
 });
