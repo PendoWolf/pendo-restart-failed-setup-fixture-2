@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
 import { writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
@@ -25,15 +26,31 @@ assistantRouter.post("/chat", async (req, res, next) => {
   }
   const { user, account } = res.locals as AuthLocals;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const { content, model, stopReason } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The model has answered (or refused): only known once the LLM call finishes.
+    trackPendoEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: body.conversationId.slice(0, 64),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        model,
+        stopReason,
+        refused: stopReason === "refusal",
+        replyLength: content.length,
+        upcomingTripsCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
+      req,
+    });
     res.json(reply);
   } catch (error) {
     next(error);

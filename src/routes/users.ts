@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,21 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A new member really joined the account (not a 400 or a 409). The visitor is the user who added them.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent({
+    event: "team_member_added",
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      accountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? null,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+    req,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +90,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +99,22 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only when the role actually changed, not on every save of the user.
+  if (previous && previous.role !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent({
+      event: "user_role_changed",
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        accountId: updated.accountId,
+      },
+      req,
+    });
   }
   res.json(updated);
 });
