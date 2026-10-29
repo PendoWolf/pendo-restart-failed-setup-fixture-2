@@ -1,8 +1,26 @@
 import { Router } from "express";
+import { clip, PENDO_EVENTS, trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another (negative when `to` is earlier). */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** How long the trip is and how far ahead it starts, for the trip Track Events. */
+function tripTiming(trip: Trip): { tripLengthDays: number; daysUntilStart: number } {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    // Counts both the first and the last day, so a same-day trip is 1 day long.
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    daysUntilStart: daysBetween(today, trip.startDate),
+  };
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +61,19 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved: only the server knows it was really created.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    PENDO_EVENTS.tripCreated,
+    { visitorId: user.id, accountId: account.id },
+    {
+      tripId: trip.id,
+      destination: clip(trip.destination),
+      travelers: trip.travelers,
+      ...tripTiming(trip),
+      startDate: trip.startDate,
+    },
+  );
   res.status(201).json(trip);
 });
 
@@ -62,16 +93,30 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
-  if (!trip) {
+  if (!previous || !trip) {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The edit was saved: compare the old and new trip to see which fields changed.
+  const fields = ["destination", "startDate", "endDate", "travelers"] as const;
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    PENDO_EVENTS.tripUpdated,
+    { visitorId: user.id, accountId: account.id },
+    {
+      tripId: trip.id,
+      changedFields: fields.filter((field) => previous[field] !== trip[field]),
+      travelers: trip.travelers,
+      ...tripTiming(trip),
+    },
+  );
   res.json(trip);
 });
 

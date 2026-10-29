@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { PENDO_EVENTS, trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,18 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The new member passed validation and the duplicate-email check, so they're really on the account now.
+  const { user: actor, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    PENDO_EVENTS.teamMemberAdded,
+    { visitorId: actor.id, accountId: account.id },
+    {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,14 +87,29 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.role !== undefined && { role: body!.role }),
   });
-  if (!updated) {
+  if (!previous || !updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a saved change of role (member <-> admin) counts, not every save of the user.
+  if (previous.role !== updated.role) {
+    const { user: actor, account } = res.locals as AuthLocals;
+    trackPendoEvent(
+      PENDO_EVENTS.userRoleChanged,
+      { visitorId: actor.id, accountId: account.id },
+      {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    );
   }
   res.json(updated);
 });
