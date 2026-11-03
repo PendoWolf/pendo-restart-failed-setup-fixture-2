@@ -23,25 +23,44 @@ function systemPrompt(user: User, account: Account, upcomingTrips: Trip[]): stri
   ].join("\n");
 }
 
+/** The assistant's reply, with how the model finished it. */
+export interface AssistantReply {
+  /** The reply's text, as the web app shows it. */
+  content: string;
+  /** The model that wrote the reply. */
+  model: string;
+  /** Why the model stopped, such as "end_turn" or "refusal". */
+  stopReason: string;
+  /** Whether the model refused, so the reply is the assistant's stock apology. */
+  refused: boolean;
+}
+
 /**
  * Writes the Tripwise Assistant's reply to the conversation by sending it to a Claude model through the
- * Anthropic SDK, and returns the reply's text.
+ * Anthropic SDK, and returns the reply's text with how the model finished it.
  */
 export async function writeAssistantReply(
   messages: IncomingChatMessage[],
   context: { user: User; account: Account; upcomingTrips: Trip[] },
-): Promise<string> {
+): Promise<AssistantReply> {
   const response = await anthropic.messages.create({
     model: ASSISTANT_MODEL,
     max_tokens: 2000,
     system: systemPrompt(context.user, context.account, context.upcomingTrips),
     messages: messages.map(({ role, content }) => ({ role, content })),
   });
+  const stopReason = response.stop_reason ?? "unknown";
   if (response.stop_reason === "refusal") {
-    return "Sorry, I can't help with that one. Ask me about another part of your trip.";
+    return {
+      content: "Sorry, I can't help with that one. Ask me about another part of your trip.",
+      model: response.model,
+      stopReason,
+      refused: true,
+    };
   }
-  return response.content
+  const content = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n")
     .trim();
+  return { content, model: response.model, stopReason, refused: false };
 }

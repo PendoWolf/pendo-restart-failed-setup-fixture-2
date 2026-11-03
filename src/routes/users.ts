@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,21 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The user was created (not a 400 or 409), with the role they were given or the default "member".
+  const { user: addedBy, account } = res.locals as AuthLocals;
+  trackPendoEvent("team_member_added", {
+    visitorId: addedBy.id,
+    accountId: account.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      roleDefaulted: body!.role === undefined,
+      memberAccountId: user.accountId,
+      accountUserCount: userStore.list(user.accountId).length,
+      addedByUserId: addedBy.id,
+      addedByRole: addedBy.role,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +90,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +99,21 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a role that differs from the stored one counts, not name or email edits or a resave of the same role.
+  if (previous && previous.role !== updated.role) {
+    const { user: changedBy, account } = res.locals as AuthLocals;
+    trackPendoEvent("user_role_changed", {
+      visitorId: changedBy.id,
+      accountId: account.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+        changedByUserId: changedBy.id,
+      },
+    });
   }
   res.json(updated);
 });

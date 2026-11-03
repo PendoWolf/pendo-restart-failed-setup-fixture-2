@@ -1,8 +1,16 @@
 import { Router } from "express";
+import { trackPendoEvent, truncate } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days from one ISO date to another, such as 5 from "2026-11-03" to "2026-11-08". */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -42,6 +50,20 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // The trip passed validation and was saved, which the click on the save button can't show.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent("trip_created", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      travelers: trip.travelers,
+      tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+      daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
+      accountPlan: account.plan,
+    },
   });
   res.status(201).json(trip);
 });

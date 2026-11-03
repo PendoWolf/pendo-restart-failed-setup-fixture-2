@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncate } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,11 +25,35 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  // Shared by both outcomes of assistant_reply_generated, which fires once the model has answered or failed.
+  const conversation = {
+    conversationId: truncate(body.conversationId),
+    messageCount: messages.length,
+    userMessageCount: messages.filter((message) => message.role === "user").length,
+    upcomingTripCount: upcomingTrips.length,
+    accountPlan: account.plan,
+    userRole: user.role,
+  };
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const { content, model, stopReason, refused } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
+    });
+    trackPendoEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        ...conversation,
+        model,
+        stopReason,
+        refused,
+        replyLength: content.length,
+        latencyMs: Date.now() - startedAt,
+        outcome: refused ? "refused" : "replied",
+      },
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
@@ -36,6 +61,16 @@ assistantRouter.post("/chat", async (req, res, next) => {
     };
     res.json(reply);
   } catch (error) {
+    trackPendoEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        ...conversation,
+        model: ASSISTANT_MODEL,
+        latencyMs: Date.now() - startedAt,
+        outcome: "failed",
+      },
+    });
     next(error);
   }
 });
