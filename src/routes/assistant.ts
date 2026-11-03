@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent, truncate } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,43 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  // What the event sends about the conversation. Never the message text.
+  const conversation = {
+    conversationId: truncate(body.conversationId),
+    messageCount: messages.length,
+    model: ASSISTANT_MODEL,
+    upcomingTripCount: upcomingTrips.length,
+    userId: user.id,
+    plan: account.plan,
+  };
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const { content, stopReason, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    trackEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        ...conversation,
+        outcome: "replied",
+        refused,
+        stopReason: stopReason ?? undefined,
+        replyLength: content.length,
+        latencyMs: Date.now() - startedAt,
+      },
+    );
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
     res.json(reply);
   } catch (error) {
+    // No reply came back from the model.
+    trackEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      { ...conversation, outcome: "failed", refused: false, latencyMs: Date.now() - startedAt },
+    );
     next(error);
   }
 });

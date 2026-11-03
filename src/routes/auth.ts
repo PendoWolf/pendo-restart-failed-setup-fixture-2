@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -17,10 +18,26 @@ authRouter.post("/login", (req, res) => {
   const user = userStore.verifyPassword(body.email, body.password);
   const account = user ? accountStore.get(user.accountId) : undefined;
   if (!user || !account) {
+    // A failed sign-in: attribute it to the user when the email is theirs, but never send the email or password.
+    const knownUser = user ?? userStore.findByEmail(body.email);
+    trackEvent(
+      "user_signed_in",
+      { visitorId: knownUser?.id ?? "system", accountId: knownUser?.accountId ?? "system" },
+      {
+        outcome: "failure",
+        failureReason: !knownUser ? "unknown_email" : !user ? "wrong_password" : "account_missing",
+        role: knownUser?.role,
+      },
+    );
     res.status(401).json({ error: "wrong email or password" });
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  trackEvent(
+    "user_signed_in",
+    { visitorId: user.id, accountId: account.id },
+    { outcome: "success", userId: user.id, role: user.role, plan: account.plan },
+  );
   res.json(session);
 });
 

@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,19 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Never the new user's email or name.
+  const { user: addedBy, account } = res.locals as AuthLocals;
+  trackEvent(
+    "team_member_added",
+    { visitorId: addedBy.id, accountId: account.id },
+    {
+      newUserId: user.id,
+      role: user.role,
+      memberAccountId: user.accountId,
+      addedByUserId: addedBy.id,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  );
   res.status(201).json(user);
 });
 
@@ -73,6 +88,8 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read the role before the update, to tell whether it changed.
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +99,41 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  if (previousRole !== undefined && previousRole !== updated.role) {
+    const { user: changedBy, account } = res.locals as AuthLocals;
+    trackEvent(
+      "user_role_changed",
+      { visitorId: changedBy.id, accountId: account.id },
+      {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        memberAccountId: updated.accountId,
+        changedByUserId: changedBy.id,
+      },
+    );
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
-  if (!userStore.remove(req.params.id)) {
+  // Look the user up first, so the event can record the removed user's role and account.
+  const removed = userStore.get(req.params.id);
+  if (!removed || !userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  const { user: removedBy, account } = res.locals as AuthLocals;
+  trackEvent(
+    "team_member_removed",
+    { visitorId: removedBy.id, accountId: account.id },
+    {
+      removedUserId: removed.id,
+      role: removed.role,
+      memberAccountId: removed.accountId,
+      removedByUserId: removedBy.id,
+      remainingAccountUserCount: userStore.list(removed.accountId).length,
+    },
+  );
   res.status(204).end();
 });

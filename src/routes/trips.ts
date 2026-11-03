@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { daysBetween, today, trackEvent, truncate } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +26,20 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** The trip fields a PUT can change. */
+const TRIP_FIELDS: (keyof NewTrip)[] = ["destination", "startDate", "endDate", "travelers"];
+
+/** The trip's details for a Pendo Track Event. */
+function tripProperties(trip: Trip) {
+  return {
+    tripId: trip.id,
+    destination: truncate(trip.destination),
+    travelers: trip.travelers,
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    daysUntilStart: daysBetween(today(), trip.startDate),
+  };
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -43,6 +59,12 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent(
+    "trip_created",
+    { visitorId: user.id, accountId: account.id },
+    { ...tripProperties(trip), userId: user.id },
+  );
   res.status(201).json(trip);
 });
 
@@ -62,6 +84,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,13 +95,31 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // Only a save that changes something counts as an update.
+  const changedFields = previous ? TRIP_FIELDS.filter((field) => previous[field] !== trip[field]) : [];
+  if (changedFields.length > 0) {
+    const { user, account } = res.locals as AuthLocals;
+    trackEvent(
+      "trip_updated",
+      { visitorId: user.id, accountId: account.id },
+      { ...tripProperties(trip), changedFields, userId: user.id },
+    );
+  }
   res.json(trip);
 });
 
 tripsRouter.delete("/:id", (req, res) => {
-  if (!tripStore.remove(req.params.id)) {
+  // Look the trip up first, so the event can describe the trip that was removed.
+  const trip = tripStore.get(req.params.id);
+  if (!trip || !tripStore.remove(req.params.id)) {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent(
+    "trip_deleted",
+    { visitorId: user.id, accountId: account.id },
+    { ...tripProperties(trip), userId: user.id },
+  );
   res.status(204).end();
 });
