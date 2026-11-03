@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,16 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // A new customer account, and the plan it starts on.
+  const { user: createdBy } = res.locals as AuthLocals;
+  trackEvent({
+    event: "account_created",
+    visitorId: createdBy.id,
+    accountId: account.id,
+    properties: { plan: account.plan, createdByUserId: createdBy.id },
+  });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,13 +69,30 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
   });
-  if (!updated) {
+  if (!updated || !previous) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only when the plan actually changed (an upgrade or a downgrade), not on every save of the account.
+  if (updated.plan !== previous.plan) {
+    const { user: changedBy } = res.locals as AuthLocals;
+    trackEvent({
+      event: "account_plan_changed",
+      visitorId: changedBy.id,
+      accountId: updated.id,
+      properties: {
+        previousPlan: previous.plan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+        accountUserCount: userStore.list(updated.id).length,
+        changedByUserId: changedBy.id,
+      },
+    });
   }
   res.json(updated);
 });

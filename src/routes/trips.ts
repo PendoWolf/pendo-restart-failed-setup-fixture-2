@@ -1,6 +1,13 @@
 import { Router } from "express";
+import { daysBetween, today, trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
+
+/** How many days the trip spans, counting its first and last day. */
+function tripDurationDays(trip: Trip): number {
+  return daysBetween(trip.startDate, trip.endDate) + 1;
+}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -43,6 +50,21 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved: Trip Planning's main conversion.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      travelers: trip.travelers,
+      tripDurationDays: tripDurationDays(trip),
+      daysUntilStart: daysBetween(today(), trip.startDate),
+      startDate: trip.startDate,
+      accountPlan: account.plan,
+    },
+  });
   res.status(201).json(trip);
 });
 
@@ -62,16 +84,32 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
-  if (!trip) {
+  if (!trip || !previous) {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The trip passed validation and was saved, with what changed compared with the trip before.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_updated",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      travelers: trip.travelers,
+      previousTravelers: previous.travelers,
+      tripDurationDays: tripDurationDays(trip),
+      datesChanged: trip.startDate !== previous.startDate || trip.endDate !== previous.endDate,
+      destinationChanged: trip.destination !== previous.destination,
+    },
+  });
   res.json(trip);
 });
 
