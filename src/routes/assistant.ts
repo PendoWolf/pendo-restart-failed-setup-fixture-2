@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
+import { TRIPWISE_ASSISTANT_AGENT_ID, trackAgent } from "../assistant/track-agent.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,6 +25,22 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const conversationId = body.conversationId;
+  // The newest user message is the prompt this request asks the assistant to answer.
+  const prompt = [...messages].reverse().find((message) => message.role === "user");
+  if (prompt) {
+    trackAgent(
+      "prompt",
+      {
+        agentId: TRIPWISE_ASSISTANT_AGENT_ID,
+        conversationId,
+        messageId: randomUUID(),
+        content: prompt.content,
+        fileUploaded: false,
+      },
+      { req, user, account },
+    );
+  }
   try {
     const content = await writeAssistantReply(messages, {
       user,
@@ -31,9 +48,21 @@ assistantRouter.post("/chat", async (req, res, next) => {
       upcomingTrips: tripStore.upcoming(),
     });
     const reply: ChatReply = {
-      conversationId: body.conversationId,
+      conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Tracked with the reply's own id, so a reaction to this message can refer to it.
+    trackAgent(
+      "agent_response",
+      {
+        agentId: TRIPWISE_ASSISTANT_AGENT_ID,
+        conversationId,
+        messageId: reply.message.id,
+        content,
+        modelUsed: ASSISTANT_MODEL,
+      },
+      { req, user, account },
+    );
     res.json(reply);
   } catch (error) {
     next(error);
