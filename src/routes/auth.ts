@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -18,10 +19,22 @@ authRouter.post("/login", (req, res) => {
   const account = user ? accountStore.get(user.accountId) : undefined;
   if (!user || !account) {
     res.status(401).json({ error: "wrong email or password" });
+    // Pendo: the credentials were rejected. There's no signed-in user, and the email is never sent.
+    trackEvent(
+      "sign_in_completed",
+      { visitorId: user?.id ?? "system", accountId: account?.id ?? "system" },
+      { outcome: "failed" },
+    );
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
   res.json(session);
+  // Pendo: the credentials were accepted and a session started.
+  trackEvent(
+    "sign_in_completed",
+    { visitorId: user.id, accountId: account.id },
+    { outcome: "succeeded", userId: user.id, role: user.role, accountPlan: account.plan },
+  );
 });
 
 // Returns the signed-in user and their account.

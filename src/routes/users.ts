@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -64,6 +66,20 @@ usersRouter.post("/", (req, res) => {
     password: body!.password!,
   });
   res.status(201).json(user);
+  // Pendo: a new user joined an account.
+  const { user: addedBy } = res.locals as AuthLocals;
+  trackEvent(
+    "team_member_added",
+    { visitorId: addedBy.id, accountId: user.accountId },
+    {
+      newUserId: user.id,
+      role: user.role,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? "unknown",
+      accountUserCount: userStore.list(user.accountId).length,
+      addedByUserId: addedBy.id,
+      addedByRole: addedBy.role,
+    },
+  );
 });
 
 usersRouter.put("/:id", (req, res) => {
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -83,6 +100,21 @@ usersRouter.put("/:id", (req, res) => {
     return;
   }
   res.json(updated);
+  // Pendo: the user's role (permissions) changed, not just their name or email.
+  if (previousRole !== undefined && updated.role !== previousRole) {
+    const { user: changedBy } = res.locals as AuthLocals;
+    trackEvent(
+      "user_role_changed",
+      { visitorId: changedBy.id, accountId: updated.accountId },
+      {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        changedByUserId: changedBy.id,
+        changedByRole: changedBy.role,
+      },
+    );
+  }
 });
 
 usersRouter.delete("/:id", (req, res) => {
