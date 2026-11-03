@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -21,6 +22,12 @@ authRouter.post("/login", (req, res) => {
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // The credentials were accepted and a session started: only the API knows the sign-in succeeded.
+  trackEvent(
+    "sign_in_succeeded",
+    { visitorId: user.id, accountId: account.id },
+    { user_role: user.role, account_id: account.id, account_plan: account.plan },
+  );
   res.json(session);
 });
 

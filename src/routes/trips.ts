@@ -1,8 +1,22 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
+import { daysBetween, todayIso, trackEvent, type TrackIdentity } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TRIP_FIELDS: (keyof NewTrip)[] = ["destination", "startDate", "endDate", "travelers"];
+
+/** The signed-in user and account (from requireAuth), as the Pendo visitor and account. */
+function trackIdentity(res: Response): TrackIdentity {
+  const { user, account } = res.locals as AuthLocals;
+  return { visitorId: user.id, accountId: account.id };
+}
+
+/** The trip's length in days, counting both the first and last day. */
+function tripLengthDays(trip: Trip): number {
+  return daysBetween(trip.startDate, trip.endDate) + 1;
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -43,6 +57,16 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved.
+  trackEvent("trip_created", trackIdentity(res), {
+    trip_id: trip.id,
+    destination: trip.destination,
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    travelers: trip.travelers,
+    trip_length_days: tripLengthDays(trip),
+    days_until_start: daysBetween(todayIso(), trip.startDate),
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +86,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,13 +97,31 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The update was saved; compare with the trip as it was to report which details changed.
+  trackEvent("trip_updated", trackIdentity(res), {
+    trip_id: trip.id,
+    destination: trip.destination,
+    changed_fields: TRIP_FIELDS.filter((field) => previous?.[field] !== trip[field]),
+    previous_travelers: previous?.travelers ?? trip.travelers,
+    travelers: trip.travelers,
+    trip_length_days: tripLengthDays(trip),
+  });
   res.json(trip);
 });
 
 tripsRouter.delete("/:id", (req, res) => {
-  if (!tripStore.remove(req.params.id)) {
+  const trip = tripStore.get(req.params.id);
+  if (!trip || !tripStore.remove(req.params.id)) {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The trip was actually removed (not a 404).
+  const today = todayIso();
+  trackEvent("trip_deleted", trackIdentity(res), {
+    trip_id: trip.id,
+    destination: trip.destination,
+    days_until_start: daysBetween(today, trip.startDate),
+    was_upcoming: trip.endDate >= today,
+  });
   res.status(204).end();
 });
