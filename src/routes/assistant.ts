@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { APIError } from "@anthropic-ai/sdk";
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,11 +26,27 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+    const { content, stopReason } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    // The assistant produced a reply (refusals included). Never send message content: it may hold PII.
+    trackPendoEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: body.conversationId.slice(0, 64),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        stopReason: stopReason ?? "unknown",
+        isRefusal: stopReason === "refusal",
+        replyLength: content.length,
+        model: ASSISTANT_MODEL,
+        upcomingTripCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
+      req,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
@@ -36,6 +54,21 @@ assistantRouter.post("/chat", async (req, res, next) => {
     };
     res.json(reply);
   } catch (error) {
+    // The Anthropic call failed, so the request goes to the error handler (500).
+    trackPendoEvent({
+      event: "assistant_reply_failed",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: body.conversationId.slice(0, 64),
+        messageCount: messages.length,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        ...(error instanceof APIError && typeof error.status === "number" && { statusCode: error.status }),
+        model: ASSISTANT_MODEL,
+        userRole: user.role,
+      },
+      req,
+    });
     next(error);
   }
 });

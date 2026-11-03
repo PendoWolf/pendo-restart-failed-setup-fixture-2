@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { daysBetween, today, trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +26,12 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** The trip's fields that differ between `before` and `after`. */
+function changedTripFields(before: Trip, after: Trip): string[] {
+  const fields: (keyof NewTrip)[] = ["destination", "startDate", "endDate", "travelers"];
+  return fields.filter((field) => before[field] !== after[field]);
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -42,6 +50,22 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // A valid trip was saved. Only non-PII trip details: never the destination.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      travelers: trip.travelers,
+      tripLengthDays: daysBetween(trip.startDate, trip.endDate),
+      daysUntilStart: daysBetween(today(), trip.startDate),
+      startDate: trip.startDate,
+      accountPlan: account.plan,
+    },
+    req,
   });
   res.status(201).json(trip);
 });
@@ -62,6 +86,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -71,6 +96,25 @@ tripsRouter.put("/:id", (req, res) => {
   if (!trip) {
     res.status(404).json({ error: "trip not found" });
     return;
+  }
+  // A valid edit was saved: only when something actually changed, so re-saving an unchanged trip doesn't count.
+  const changedFields = previous ? changedTripFields(previous, trip) : [];
+  if (previous && changedFields.length > 0) {
+    const { user, account } = res.locals as AuthLocals;
+    trackPendoEvent({
+      event: "trip_updated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        tripId: trip.id,
+        changedFields,
+        travelers: trip.travelers,
+        previousTravelers: previous.travelers,
+        tripLengthDays: daysBetween(trip.startDate, trip.endDate),
+        daysUntilStart: daysBetween(today(), trip.startDate),
+      },
+      req,
+    });
   }
   res.json(trip);
 });

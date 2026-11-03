@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,17 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // A new company account was saved: a sign-up milestone. The session's user created it.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent({
+    event: "account_created",
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: { newAccountId: created.id, plan: created.plan },
+    req,
+  });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +70,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +78,22 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only when the plan actually changed: an upgrade or downgrade, not a re-save of the same plan.
+  if (previous && previous.plan !== updated.plan) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent({
+      event: "account_plan_changed",
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetAccountId: updated.id,
+        previousPlan: previous.plan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+      },
+      req,
+    });
   }
   res.json(updated);
 });
