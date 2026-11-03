@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { pendoTrack } from "../analytics/pendo-track.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,19 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The server accepted the new team member. No email or name: they're personal data.
+  const { user: actor, account } = res.locals as AuthLocals;
+  pendoTrack({
+    event: "team_member_added",
+    visitorId: actor.id,
+    accountId: account.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +88,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +97,21 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only when the role actually changed, so re-saving the same role doesn't count as a permission change.
+  if (previous && previous.role !== updated.role) {
+    const { user: actor, account } = res.locals as AuthLocals;
+    pendoTrack({
+      event: "user_role_changed",
+      visitorId: actor.id,
+      accountId: account.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    });
   }
   res.json(updated);
 });

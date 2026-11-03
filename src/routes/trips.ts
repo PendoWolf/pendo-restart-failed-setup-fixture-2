@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { daysBetween, pendoTrack, todayIsoDate, truncate } from "../analytics/pendo-track.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +26,14 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** The trip's length and lead time, as the trip Track Events report them. */
+function tripTiming(trip: Trip): { tripLengthDays: number; daysUntilStart: number } {
+  return {
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    daysUntilStart: daysBetween(todayIsoDate(), trip.startDate),
+  };
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -42,6 +52,20 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // The trip passed validation and was saved.
+  const { user, account } = res.locals as AuthLocals;
+  pendoTrack({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      travelers: trip.travelers,
+      startDate: trip.startDate,
+      ...tripTiming(trip),
+    },
   });
   res.status(201).json(trip);
 });
@@ -62,6 +86,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +97,20 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The update passed validation and the trip exists: record which of its details changed.
+  const tripFields: (keyof NewTrip)[] = ["destination", "startDate", "endDate", "travelers"];
+  const { user, account } = res.locals as AuthLocals;
+  pendoTrack({
+    event: "trip_updated",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      changedFields: tripFields.filter((field) => previous?.[field] !== trip[field]),
+      travelers: trip.travelers,
+      ...tripTiming(trip),
+    },
+  });
   res.json(trip);
 });
 

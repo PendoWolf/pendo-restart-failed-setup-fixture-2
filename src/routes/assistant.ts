@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { pendoTrack, truncate } from "../analytics/pendo-track.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, REFUSAL_REPLY, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,44 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  // What the assistant_reply_generated Track Event reports on both success and failure.
+  const conversationProperties = {
+    conversationId: truncate(body.conversationId),
+    messageCount: messages.length,
+    userMessageCount: messages.filter((message) => message.role === "user").length,
+    model: ASSISTANT_MODEL,
+    upcomingTripCount: upcomingTrips.length,
+    accountPlan: account.plan,
+    userRole: user.role,
+  };
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const content = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The model answered (or refused): record how the assistant did on this conversation.
+    pendoTrack({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        ...conversationProperties,
+        replyLength: content.length,
+        refused: content === REFUSAL_REPLY,
+        outcome: "success",
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // The model call failed: record it so the assistant's failure rate can be measured.
+    pendoTrack({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: { ...conversationProperties, replyLength: 0, refused: false, outcome: "error" },
+    });
     next(error);
   }
 });
