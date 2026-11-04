@@ -1,6 +1,7 @@
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { requireAuth } from "./auth/require-auth.js";
+import { middleware as pendoIdentity } from "pendo-server-sdk";
+import { type AuthLocals, requireAuth } from "./auth/require-auth.js";
 import { accountsRouter } from "./routes/accounts.js";
 import { assistantRouter } from "./routes/assistant.js";
 import { authRouter } from "./routes/auth.js";
@@ -22,7 +23,21 @@ export function createApp(corsOrigin: string) {
   app.use("/api/trips", requireAuth, tripsRouter);
   app.use("/api/users", requireAuth, usersRouter);
   app.use("/api/accounts", requireAuth, accountsRouter);
-  app.use("/api/assistant", requireAuth, assistantRouter);
+  app.use(
+    "/api/assistant",
+    requireAuth,
+    // Tells Pendo Agent Analytics whose conversation each assistant turn belongs to.
+    pendoIdentity((req: Request) => {
+      const locals = req.res?.locals as Partial<AuthLocals> | undefined;
+      const conversationId: unknown = req.body?.conversationId;
+      return {
+        visitorId: locals?.user?.id, // TODO: map to the visitor id your Pendo web snippet uses
+        accountId: locals?.account?.id, // TODO: map to the account id your Pendo web snippet uses
+        conversationId: typeof conversationId === "string" ? conversationId : undefined,
+      };
+    }),
+    assistantRouter,
+  );
 
   app.use((_req, res) => {
     res.status(404).json({ error: "not found" });

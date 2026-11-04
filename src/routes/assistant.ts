@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { closeTurn } from "pendo-server-sdk";
 import type { AuthLocals } from "../auth/require-auth.js";
 import { writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
@@ -37,5 +38,8 @@ assistantRouter.post("/chat", async (req, res, next) => {
     res.json(reply);
   } catch (error) {
     next(error);
+  } finally {
+    // Ends the Pendo Agent Analytics turn, so its prompt and reply are sent without waiting for the next one.
+    closeTurn(body.conversationId);
   }
 });
